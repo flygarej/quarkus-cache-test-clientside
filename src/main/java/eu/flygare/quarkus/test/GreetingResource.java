@@ -72,6 +72,10 @@ public class GreetingResource {
         return tokenhandler.restGetTokenNaive();
     }
     
+    /**
+     * Invalidate cache for naive reactive calls
+     * @return 
+     */
     @Path("/invalidatenaive")
     @GET
     @Produces(MediaType.TEXT_PLAIN)
@@ -82,7 +86,7 @@ public class GreetingResource {
     
     
     /**
-     * Invalidate current cache for tokens.
+     * Invalidate current cache for handled reactive calls.
      *
      * @return
      */
@@ -91,7 +95,8 @@ public class GreetingResource {
     @Produces(MediaType.TEXT_PLAIN)
     @Blocking
     public Uni<String> invalidate() {
-        // Must invalidate tokenhandler to make sure cached Uni is renewed in case we had several calls.
+        // Two stage handling, first check booleans to see if we're waiting for a 
+        // pending resolution. If not, invalidate cache.
         return tokenhandler.invalidateBoolean().map((t) -> {
             System.out.println("t: " + t);
             if (t) {

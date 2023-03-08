@@ -24,18 +24,18 @@ public class TokenHandler {
     @RestClient
     TokenSource tokensource;
 
-// We can access the cache directly, but if we instead make sure there is only one 
-// Uni returned things work as we want...
-//    @Inject
-//    @CacheName("connectapi-token-rest")
-//    Cache cache;
-//    
-//    @Inject
-//    CacheManager cacheManager;
+    // I use atomicbooleans to guard cache write and invalidate
+    // This can most probably be improved.
     AtomicBoolean pendingUniActive = new AtomicBoolean(false);
     AtomicBoolean isWaitingForToken = new AtomicBoolean(false);
+    // We store the first Uni when we are not cached in a global guarded by an AtomicBolean
     Uni<String> pendingUni = null;
 
+    /**
+     * Cache the uni by returning the pending one
+     *
+     * @return
+     */
     @CacheResult(cacheName = "connectapi-token-rest")
     public Uni<String> restGetToken() {
         // Cache annotation can be here or on the REST interface.
@@ -44,19 +44,28 @@ public class TokenHandler {
         return getPendingUni();
 
     }
-    
-    
+
+    /**
+     * Naive reactive cache as seen in guides
+     *
+     * @return
+     */
     @CacheResult(cacheName = "connectapi-token-rest-naive")
     public Uni<String> restGetTokenNaive() {
         // Cache annotation can be here or on the REST interface.
         // README:
         // We must ensure that pending unis are not created multiple times.
         return tokensource.getToken().memoize().indefinitely()
-                    .log("getRestTokenUniNaive:");
+                .log("getRestTokenUniNaive:");
 
     }
 
-    // Wrap with lock to make sure only one thread at a time access the boolean.
+    /**
+     * Get pending Uni, if none found create one and memoize Not sure the lock
+     * is needed...
+     *
+     * @return
+     */
     @Lock(Lock.Type.WRITE)
     public Uni<String> getPendingUni() {
         LOG.info("Fetching uni. boolean= " + pendingUniActive.get());
@@ -72,13 +81,15 @@ public class TokenHandler {
         return pendingUni;
     }
 
-    @CacheInvalidateAll(cacheName = "connectapi-token-rest")
-    public Boolean invalidateCache() {
-        LOG.info("cache invalidation triggered");
-        return true;
-    }
-
+    /**
+     * Invalidation of reactive done in two steps, first manipulate the AtomicBoolean,
+     * unless we're waiting for an ongoing resolution, then call
+     * invalidateCache() and let annotation zap cache entry.
+     * Could probably mess with cache directly, but nah.
+     * @return
+     */
     public Uni<Boolean> invalidateBoolean() {
+        // This code is a mess wrt thread safety, but is good enough to show what I want
         return Uni.createFrom().item(isWaitingForToken.get()).map((isWaiting) -> {
             LOG.info("waiting for token: " + isWaiting);
             if (isWaiting) {
@@ -87,7 +98,7 @@ public class TokenHandler {
             else { // Check if we have a pending UNI that needs to be reset
                 LOG.info("Pending uni: " + pendingUniActive.get());
                 if (pendingUniActive.compareAndSet(true, false)) {
-                    pendingUni = null;
+                    pendingUni = null; // Just to ensure we d not leave an old Uni in global
                 }
                 LOG.info("Pending uni: " + pendingUniActive.get());
                 return true;
@@ -96,6 +107,21 @@ public class TokenHandler {
         );
     }
 
+    /**
+     * Zap reactive cache
+     * @return 
+     */
+    @CacheInvalidateAll(cacheName = "connectapi-token-rest")
+    public Boolean invalidateCache() {
+        LOG.info("cache invalidation triggered");
+        return true;
+    }
+
+    /**
+     * Normal caching of blocking calls
+     *
+     * @return
+     */
     @CacheResult(cacheName = "connectapi-token-rest-blocking")
     public String restGetTokenBlocking() {
         // Cache annotation can be here or on the REST interface.
@@ -107,23 +133,4 @@ public class TokenHandler {
         return tokensource.getTokenBlocking();
     }
 
-//    // Old method manually protecting token, deprecated in favor of guarded cache handling
-//    @Lock(value = Lock.Type.WRITE, unit = TimeUnit.SECONDS, time = 20)
-//    public String getTokenHomeRolled() {
-//        // Check if token is invalid. If so get new one. Surrounding lock will queue other threads until resolved.
-//        if (tokenOk.compareAndSet(false, true)) {
-//            // This part should be atomic, blocking others from entering test above until done.
-//            token = Uni.createFrom().item("foobar").map((t) -> {
-//                // If here, tokenOk=false!
-//                LOG.info("Delaying return of token, simulating time to fetch new one");
-//                return tokensource.getRestToken();
-//            })
-//                    .onItem().delayIt().by(Duration.ofSeconds(10))
-//                    .invoke(() -> {
-//                        tokenOk.set(true); // Do not set this until AFTER delay!
-//                    }).await().atMost(Duration.ofSeconds(30));
-//        }
-//        return token;
-//
-//    }
 }
